@@ -33,22 +33,20 @@ WAVEFORMS: Dict[str, dict] = {
 
 defaults = {
     "freq": 5.0,
-    "amplitude":5.0,
-    "speed":50.0,
-    "n_points":10_000,
+    "amplitude": 5.0,
+    "speed": 5.0,
+    "n_points": 10_000,
 }
 
-
-# Create 10,000 evenly spaced points between 0 and 1, as a float32 CuPy array
+# Create evenly spaced points between 0 and 1, as a float32 CuPy array
 t = cp.linspace(0, 1, defaults["n_points"], dtype=cp.float32)
-
 
 freq = defaults["freq"]
 amplitude = defaults["amplitude"]
 speed = defaults["speed"]  # speed modifier
 
-# Increment base
-base_increment = 1.0 / defaults["n_points"]
+# Phase offset for animation (decouples speed from point count)
+_phase = 0.0
 
 # Guard to avoid updating while rebuilding graphics
 _is_rebuilding = False
@@ -67,9 +65,10 @@ def delete_all_lines(subplot, lines_dict):
 
 
 # Generate waveforms + their y offsets
-def create_waveforms(freq_: float, amplitude_: float):
+def create_waveforms(freq_: float, amplitude_: float, phase_: float):
+    t_eval = t + phase_
     return {
-        name: wf["func"](t, freq_, amplitude_) + wf["offset"]
+        name: wf["func"](t_eval, freq_, amplitude_) + wf["offset"]
         for name, wf in WAVEFORMS.items()
     }
 
@@ -80,7 +79,6 @@ fig.canvas.set_title("Waveform Visualiser")
 subplot = fig[0, 0]
 subplot.title = "Waveform Animation"
 subplot.axes.visible = False  # hide axes
-
 
 # Dict of all existing lines
 lines = {}
@@ -94,7 +92,7 @@ def _positions_xy_numpy(x_cp: cp.ndarray, y_cp: cp.ndarray):
 # Creates lines, or recreates them if they already exist
 def _create_or_recreate_lines():
     global lines
-    waves_local = create_waveforms(freq, amplitude)
+    waves_local = create_waveforms(freq, amplitude, _phase)
 
     delete_all_lines(subplot, lines)
 
@@ -109,7 +107,7 @@ def _create_or_recreate_lines():
 
 # Rebuild lines with a different number of points
 def _rebuild_with_points(new_n_points: int):
-    global t, _is_rebuilding, _current_n_points, base_increment
+    global t, _is_rebuilding, _current_n_points
 
     new_n_points = int(new_n_points)
     new_n_points = max(2, new_n_points)
@@ -121,7 +119,6 @@ def _rebuild_with_points(new_n_points: int):
     try:
         _current_n_points = new_n_points
         t = cp.linspace(0, 1, new_n_points, dtype=cp.float32)
-        base_increment = 1.0 / new_n_points
         _create_or_recreate_lines()
     finally:
         _is_rebuilding = False
@@ -132,27 +129,26 @@ _create_or_recreate_lines()
 
 # Update animation
 def update(_subplot):
-    global t, freq, amplitude, speed
+    global freq, amplitude, speed, _phase
 
     if _is_rebuilding:
         return
 
-    increment = base_increment * speed
-    t_shifted = t + increment
+    # Speed is now independent of point count
+    increment = 0.001 * float(speed)
+    _phase += increment
 
     for name, line in list(lines.items()):
         wf = WAVEFORMS.get(name)
         if wf is None:
             continue
 
-        y_shifted = wf["func"](t_shifted, freq, amplitude) + wf["offset"]
+        y_shifted = wf["func"](t + _phase, freq, amplitude) + wf["offset"]
 
         try:
             line.data[:, 1] = y_shifted.get()
         except Exception as e:
             print(f"Line update failed ({name}): {e}")
-
-    t += increment
 
 
 # Add animation to subplot
@@ -170,7 +166,7 @@ class WaveformUI(EdgeWindow):
         self._pending_points = None
 
     def update(self):
-        global amplitude, freq, speed
+        global amplitude, freq, speed, _phase
 
         # Amplitude
         changed_slider, new_amp = imgui.slider_float("Amplitude", float(self._amplitude), 0.0, 10.0)
@@ -191,8 +187,8 @@ class WaveformUI(EdgeWindow):
         freq = self._freq
 
         # Speed
-        changed_slider, new_speed = imgui.slider_float("Speed", float(self._speed), 0.0, 300.0)
-        changed_text, text_speed = imgui.input_float("##Speed", float(self._speed), step=5, format="%.2f")
+        changed_slider, new_speed = imgui.slider_float("Speed", float(self._speed), 0.0, 50.0)
+        changed_text, text_speed = imgui.input_float("##Speed", float(self._speed), step=0.5, format="%.2f")
         if changed_slider:
             self._speed = float(new_speed)
         if changed_text:
@@ -224,13 +220,13 @@ class WaveformUI(EdgeWindow):
             amplitude = self._amplitude
             freq = self._freq
             speed = self._speed
+            _phase = 0.0
 
             _rebuild_with_points(self._points)
 
 
 gui = WaveformUI(fig)
 fig.add_gui(gui)
-
 
 # Show figure
 fig.show(maintain_aspect=False)
