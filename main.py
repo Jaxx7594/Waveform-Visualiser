@@ -80,6 +80,10 @@ subplot = fig[0, 0]
 subplot.title = "Waveform Animation"
 subplot.axes.visible = False  # hide axes
 
+
+# Persistent contiguous Y buffers for fast updates
+_line_y_buffers: Dict[str, cp.ndarray] = {}
+
 # Dict of all existing lines
 lines = {}
 
@@ -95,15 +99,17 @@ def _create_or_recreate_lines():
     waves_local = create_waveforms(freq, amplitude, _phase)
 
     delete_all_lines(subplot, lines)
+    _line_y_buffers.clear()
 
     for name, y in waves_local.items():
         data = _positions_xy_numpy(t, y)
-        lines[name] = subplot.add_line(
+        line = subplot.add_line(
             data=data,
             name=name,
             colors=WAVEFORMS[name]["color"],
         )
-
+        lines[name] = line
+        _line_y_buffers[name] = line.data[:, 1].copy()
 
 # Rebuild lines with a different number of points
 def _rebuild_with_points(new_n_points: int):
@@ -146,7 +152,9 @@ def update(_subplot):
         y_shifted = wf["func"](t + _phase, freq, amplitude) + wf["offset"]
 
         try:
-            line.data[:, 1] = y_shifted.get()
+            y_buf = _line_y_buffers[name]
+            y_shifted.get(out=y_buf)  # contiguous GPU → CPU copy
+            line.data[:, 1] = y_buf  # fast NumPy memcpy
         except Exception as e:
             print(f"Line update failed ({name}): {e}")
 
